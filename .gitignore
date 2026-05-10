@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+.vercel
+.next/
+dist/
+build/
+
+# 데이터/녹취 (실수로 commit 방지)
+recordings/
+*.wav
+*.mp3
+data/customers/
+data/calls/

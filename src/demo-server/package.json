@@ -1,0 +1,19 @@
+{
+  "name": "trades-os-demo-server",
+  "version": "0.1.0",
+  "description": "Trades-OS pilot demo — handyman/contractor/electrician AI assistant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "twilio": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
