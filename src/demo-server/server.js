@@ -288,6 +288,59 @@ app.delete('/api/notes/:id', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FEEDBACK — 사용자 → 개발자 코멘트 (다국어 자동 번역 포함)
+// ═══════════════════════════════════════════════════════════════════════════
+const mockFeedback = [];
+
+function detectLang(text) {
+  if (/[가-힣]/.test(text)) return 'ko';
+  if (/[一-鿿]/.test(text)) return 'zh';
+  return 'en';
+}
+
+async function translateToKorean(text, sourceLang) {
+  if (sourceLang === 'ko' || !process.env.GROQ_API_KEY) return null;
+  try {
+    const data = await callGroq({
+      messages: [
+        { role: 'system', content: 'You are a translator. Translate the user message to natural Korean. Output ONLY the Korean translation, no other text.' },
+        { role: 'user', content: text },
+      ],
+      max_tokens: 300, temperature: 0.2,
+    });
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (e) { console.error('[translate]', e.message); return null; }
+}
+
+app.get('/api/feedback', async (_req, res) => {
+  if (!supabase) return res.json({ source: 'mock', feedback: mockFeedback });
+  try {
+    const { data, error } = await supabase.from('feedback').select('*').order('created_at', { ascending: false }).limit(50);
+    if (error) throw error;
+    res.json({ source: 'supabase', feedback: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/feedback', async (req, res) => {
+  const content = (req.body?.content || '').trim();
+  if (!content) return res.status(400).json({ error: 'content 필요' });
+  if (content.length > 2000) return res.status(400).json({ error: '2000자 이하' });
+  const lang = detectLang(content);
+  const translated_ko = await translateToKorean(content, lang);
+  const row = { content, language: lang, translated_ko };
+  if (!supabase) {
+    const m = { id: genMockId(), ...row, created_at: new Date().toISOString() };
+    mockFeedback.unshift(m);
+    return res.json({ source: 'mock', feedback: m });
+  }
+  try {
+    const { data, error } = await supabase.from('feedback').insert([row]).select().single();
+    if (error) throw error;
+    res.json({ source: 'supabase', feedback: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CALLS
 // ═══════════════════════════════════════════════════════════════════════════
 app.get('/api/calls', async (_req, res) => {
@@ -467,29 +520,43 @@ async function callGroq({ messages, tools, max_tokens = 1024, temperature = 0.3 
   return data;
 }
 
-const CHAT_SYSTEM_PROMPT = `당신은 캐나다 GTA 지역 소규모 시공/수리 사업자의 AI 운영 비서입니다.
+const CHAT_SYSTEM_PROMPT = `You are an AI operations assistant for a small trades/repair business in the Canadian GTA.
 
-역할:
-- 사장님이 현장에서도 한 번의 질의로 작업·일정·매출을 파악하게 돕는다.
-- 답변은 간결하게, 이모지로 시각 정리. 마크다운 문법(**, #, -)은 쓰지 말고 줄바꿈 + 이모지.
-- 모바일에서 보기 때문에 3~6줄 내로 끝낸다.
-- 사용자 언어로 응답 (한국어로 물으면 한국어, English 면 English, 中文 면 中文).
-- 모든 금액은 CAD ($) 단위로 표기. "원"은 절대 사용 금지.
+ROLE:
+- Help the owner check jobs, schedule, and revenue in one question, even on-site.
+- Reply concisely (3~6 lines), with emojis. No markdown (**, #, -). Use line breaks + emojis only.
+- ALL amounts in CAD ($). NEVER use other currencies like 원/¥/￥.
 
-규칙:
-1. 작업·일정·매출·이동시간은 반드시 도구(tool)로 조회. 추측 금지.
-2. 매출/비용 합계는 get_revenue_summary 호출 결과만 사용. 반환 필드 의미:
-   - month_revenue_pipeline: 이번 달 등록된 모든 잡의 예상매출 합계 (lead·quoted 포함)
-   - month_revenue_in_progress: 이번 달 진행중·완료된 잡의 매출 합계 (실제 확정 매출에 가까움)
-   - month_cost_estimated: 이번 달 등록된 모든 잡의 예상 비용 합계
-   ⚠️ 두 매출 수치를 더하지 말 것. 둘 다 별도 의미를 가진다.
-   질문에 따라 적절한 것 하나를 선택하거나 둘 다 따로 보여준다.
-   예: "이번 달 매출" → 두 수치 모두 표시 ($pipeline 파이프라인 / $in_progress 확정).
-3. 잡 상태 변경, 일정 등록 같은 쓰기 작업은 항상 2단계: 요약 후 사용자 확인 → 명시적 "네/OK/Yes" 후에만 실행.
-4. 이동시간은 get_travel_time. ORS 무료티어라 실시간 교통 미반영 — 러시아워 +20% 권고.
-5. 모르는 건 솔직히 "데이터 없음"이라고 답한다.
+LANGUAGE — CRITICAL:
+- Detect the user's language from their LAST message and reply ONLY in that language.
+- If Korean → reply entirely in Korean. Status & technical labels in Korean.
+- If 中文 → reply entirely in 中文 (simplified). NEVER mix Korean labels into Chinese replies.
+- If English → reply entirely in English.
 
-상태 코드 (status): lead(문의), quoted(견적), scheduled(예약), in_progress(진행 중), completed(완료), cancelled(취소).`;
+STATUS CODES with localized labels (use these EXACTLY when responding):
+| code | 한국어 | English | 中文 |
+| lead | 문의 | Lead | 询价 |
+| quoted | 견적 | Quoted | 已报价 |
+| scheduled | 예약 | Scheduled | 已排期 |
+| in_progress | 진행 중 | In Progress | 施工中 |
+| completed | 완료 | Completed | 已完成 |
+| cancelled | 취소 | Cancelled | 已取消 |
+
+REVENUE FIELDS from get_revenue_summary — localized labels:
+| field | 한국어 | English | 中文 |
+| month_revenue_pipeline | 파이프라인 (전체 잡 예상 합계) | Pipeline (all jobs incl. leads) | 在途总额 (含询价/已报价) |
+| month_revenue_in_progress | 확정 (진행중·완료 합계) | Confirmed (in-progress + completed) | 已确认 (施工中+完工) |
+| month_cost_estimated | 예상 비용 | Est. Cost | 预计成本 |
+⚠️ NEVER sum the two revenue figures. They have distinct meanings.
+"This month's revenue" → show BOTH separately, never added.
+
+RULES:
+1. Jobs, schedule, revenue, travel time — always via tools. No guessing.
+2. Writes (status change, event create, crew assign) ALWAYS 2-step:
+   summarize → wait for user's explicit OK (예/네/是的/Yes) → execute.
+3. Travel time: get_travel_time. ORS free tier (no live traffic) — suggest +20% buffer for rush hour (7-9am, 4-7pm).
+4. Unknown data → say so in user's language ("데이터 없음" / "no data" / "无数据"), don't invent.
+5. When showing money, always prefix with $ (e.g., $4,800).`;
 
 const CHAT_TOOLS = [
   { name: 'list_jobs', description: '잡(공사) 목록 조회. status/trade_type 필터 가능.', input_schema: { type: 'object', properties: { status: { type: 'string', description: 'lead|quoted|scheduled|in_progress|completed|cancelled' }, trade_type: { type: 'string' }, limit: { type: 'integer', default: 20 } } } },
@@ -695,6 +762,15 @@ app.get('/dashboard', (_req, res) => {
   res.type('html').send(getDashboardHTML());
 });
 
+// ─── 사용설명서 (중국어 HTML) — 문자/이메일 전송 가능한 단독 파일 ──
+app.get('/manual-zh', (_req, res) => {
+  res.type('html').send(getManualHTML_zh());
+});
+app.get('/manual', (req, res) => {
+  // ?lang=zh|en|ko
+  res.type('html').send(getManualHTML_zh()); // 현재 중국어만 제공
+});
+
 function getDashboardHTML() {
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -796,6 +872,18 @@ function getDashboardHTML() {
         </div>
         <ul id="notes-list" class="space-y-2 text-sm"></ul>
       </div>
+
+      <!-- 피드백 섹션 -->
+      <div class="card p-4 border-2 border-blue-200">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold text-blue-900" id="t-feedback">💬 개발자에게 코멘트</h2>
+        </div>
+        <div class="flex gap-2 mb-3">
+          <textarea id="feedback-input" rows="2" placeholder="" class="flex-1 border rounded px-2 py-1.5 text-sm resize-none"></textarea>
+          <button id="feedback-send" onclick="sendFeedback()" class="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">보내기</button>
+        </div>
+        <ul id="feedback-list" class="space-y-2 text-xs"></ul>
+      </div>
     </div>
   </div>
 </div>
@@ -876,6 +964,9 @@ const I18N = {
     revenue: '이번 달 매출', schedule: '📅 오늘 일정', calls: '📞 부재중 통화',
     newjobs: '🟡 신규 의뢰', active: '🔨 진행 중', scheduled: '📌 예약 / 견적',
     notes: '📝 메모', add: '+ 추가', addNote: '+ 추가',
+    notePlaceholder: '메모 추가...',
+    feedback: '💬 개발자에게 코멘트', feedbackPlaceholder: '어떤 기능이 있으면 더 좋을지 자유롭게 (한국어/中文/English)',
+    feedbackSend: '보내기', feedbackEmpty: '아직 코멘트 없음.',
     chatTitle: '🤖 AI 비서', chatSub: '잡·일정·매출 질의',
     chatPlaceholder: '예: 오늘 진행 중인 작업, Smith 댁 일정',
     reset: '초기화', send: '전송',
@@ -892,6 +983,9 @@ const I18N = {
     revenue: 'Monthly Revenue', schedule: '📅 Today\\'s Schedule', calls: '📞 Missed Calls',
     newjobs: '🟡 New Requests', active: '🔨 In Progress', scheduled: '📌 Scheduled / Quoted',
     notes: '📝 Notes', add: '+ Add', addNote: '+ Add',
+    notePlaceholder: 'Add note...',
+    feedback: '💬 Send Feedback to Dev', feedbackPlaceholder: 'What features would you like? (한국어/中文/English all OK)',
+    feedbackSend: 'Send', feedbackEmpty: 'No feedback yet.',
     chatTitle: '🤖 AI Assistant', chatSub: 'Jobs · Schedule · Revenue',
     chatPlaceholder: 'e.g., Active jobs today, Smith schedule',
     reset: 'Reset', send: 'Send',
@@ -908,6 +1002,9 @@ const I18N = {
     revenue: '本月收入', schedule: '📅 今日排期', calls: '📞 未接来电',
     newjobs: '🟡 新订单', active: '🔨 施工中', scheduled: '📌 已排期 / 已报价',
     notes: '📝 备忘录', add: '+ 添加', addNote: '+ 添加',
+    notePlaceholder: '添加备忘录...',
+    feedback: '💬 给开发者留言', feedbackPlaceholder: '希望增加哪些功能？请随意留言 (中文/한국어/English 都可以，会自动翻译)',
+    feedbackSend: '发送', feedbackEmpty: '暂无留言。',
     chatTitle: '🤖 AI 助理', chatSub: '工程·排期·收入',
     chatPlaceholder: '例如：今日施工中工程、Smith 家排期',
     reset: '重置', send: '发送',
@@ -921,7 +1018,10 @@ const I18N = {
   },
 };
 
-let LANG = localStorage.getItem('trades-lang') || 'ko';
+// URL ?lang=xx 우선, 없으면 localStorage, 둘 다 없으면 ko
+const _qsLang = new URLSearchParams(window.location.search).get('lang');
+let LANG = (_qsLang && I18N[_qsLang]) ? _qsLang : (localStorage.getItem('trades-lang') || 'ko');
+if (_qsLang && I18N[_qsLang]) localStorage.setItem('trades-lang', _qsLang);
 function t() { return I18N[LANG] || I18N.ko; }
 
 function applyI18n() {
@@ -956,6 +1056,17 @@ function applyI18n() {
   document.getElementById('lab-start').textContent = T.fields.start;
   document.getElementById('lab-end').textContent = T.fields.end;
   document.getElementById('lab-desc').textContent = T.fields.desc;
+
+  // memo input placeholder
+  const noteInput = document.getElementById('note-input');
+  if (noteInput) noteInput.placeholder = T.notePlaceholder;
+  // feedback section
+  const fbTitle = document.getElementById('t-feedback');
+  if (fbTitle) fbTitle.textContent = T.feedback;
+  const fbInput = document.getElementById('feedback-input');
+  if (fbInput) fbInput.placeholder = T.feedbackPlaceholder;
+  const fbBtn = document.getElementById('feedback-send');
+  if (fbBtn) fbBtn.textContent = T.feedbackSend;
 
   const dateOpts = { weekday: 'short', month: 'numeric', day: 'numeric' };
   document.getElementById('hdr-date').textContent = new Date().toLocaleDateString(LANG === 'en' ? 'en-CA' : LANG === 'zh' ? 'zh-CN' : 'ko-KR', dateOpts);
@@ -1179,6 +1290,40 @@ async function loadCalls() {
   } catch (e) {}
 }
 
+async function loadFeedback() {
+  try {
+    const r = await api('/api/feedback');
+    const ul = document.getElementById('feedback-list');
+    if (!r.feedback.length) { ul.innerHTML = '<li class="text-slate-400">' + t().feedbackEmpty + '</li>'; return; }
+    ul.innerHTML = r.feedback.map(f => {
+      const dt = new Date(f.created_at).toLocaleString(LANG === 'en' ? 'en-CA' : LANG === 'zh' ? 'zh-CN' : 'ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const langTag = f.language ? \`<span class="text-[10px] font-mono bg-slate-100 px-1 rounded">\${f.language.toUpperCase()}</span>\` : '';
+      const original = \`<div class="text-slate-800">\${esc(f.content)}</div>\`;
+      const translated = (f.translated_ko && f.language !== 'ko')
+        ? \`<div class="text-slate-500 mt-1 pl-2 border-l-2 border-blue-200">🇰🇷 \${esc(f.translated_ko)}</div>\`
+        : '';
+      return \`<li class="bg-slate-50 rounded p-2"><div class="flex items-center gap-2 mb-1">\${langTag}<span class="text-[10px] text-slate-400">\${dt}</span></div>\${original}\${translated}</li>\`;
+    }).join('');
+  } catch (e) {}
+}
+
+async function sendFeedback() {
+  const input = document.getElementById('feedback-input');
+  const content = input.value.trim();
+  if (!content) return;
+  const btn = document.getElementById('feedback-send');
+  btn.disabled = true;
+  try {
+    await api('/api/feedback', { method: 'POST', body: JSON.stringify({ content }) });
+    input.value = '';
+    loadFeedback();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadSchedule() {
   try {
     const r = await api('/api/calendar/today');
@@ -1351,13 +1496,199 @@ function blobToBase64(blob) {
 // 초기 로드 + 30초 자동 새로고침
 // ═══════════════════════════════════════════════════════════════════════════
 async function loadAll() {
-  await Promise.all([loadRevenue(), loadJobs(), loadNotes(), loadCalls(), loadSchedule()]);
+  await Promise.all([loadRevenue(), loadJobs(), loadNotes(), loadCalls(), loadSchedule(), loadFeedback()]);
 }
 
 applyI18n();
 loadAll();
 setInterval(loadAll, 30000);
 </script>
+</body>
+</html>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 中文 使用说明书 (HTML) — 可保存为文件，通过短信/邮件分享
+// ═══════════════════════════════════════════════════════════════════════════
+function getManualHTML_zh() {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trades-OS 使用说明书</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif; max-width: 760px; margin: 0 auto; padding: 24px; line-height: 1.7; color: #1f2937; background: #f8fafc; }
+  h1 { color: #1e3a8a; border-bottom: 3px solid #3b82f6; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 32px; border-left: 4px solid #3b82f6; padding-left: 12px; }
+  h3 { color: #374151; margin-top: 20px; }
+  a { color: #2563eb; }
+  code { background: #e0e7ff; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.92em; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; background: white; }
+  th, td { border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; }
+  th { background: #dbeafe; color: #1e3a8a; }
+  .url-card { background: white; border: 2px solid #3b82f6; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .url-card a { font-size: 1.1em; font-weight: 600; word-break: break-all; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
+  .b-lead { background: #fef3c7; color: #92400e; }
+  .b-quoted { background: #dbeafe; color: #1e40af; }
+  .b-scheduled { background: #e0e7ff; color: #3730a3; }
+  .b-in_progress { background: #fed7aa; color: #9a3412; }
+  .b-completed { background: #d1fae5; color: #065f46; }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 0.9em; }
+  .tip { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 4px; }
+  ul li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>🛠️ Trades-OS 使用说明书</h1>
+<p>面向 GTA 地区小规模装修/维修业主（装修工、承包商、电工、水暖工等）的 AI 经营助理。</p>
+
+<div class="url-card">
+  <div style="font-size: 0.85em; color: #64748b; margin-bottom: 4px;">🔗 中文版打开链接（默认中文）</div>
+  <a href="https://trades-os-nine.vercel.app/dashboard?lang=zh">https://trades-os-nine.vercel.app/dashboard?lang=zh</a>
+</div>
+
+<h2>1. 一句话介绍</h2>
+<p>不用打开电脑，<strong>用一句话查询工程、排期、本月收入</strong>。可以用打字、语音说话、电话来电三种方式与 AI 助理沟通。</p>
+
+<h2>2. 主要功能</h2>
+<ul>
+  <li><strong>工程管理</strong>：新订单 → 已报价 → 已排期 → 施工中 → 已完成</li>
+  <li><strong>本月收入概览</strong>：在途总额 / 已确认 / 预计成本</li>
+  <li><strong>AI 助理</strong>：中文自然语言对话，可查询、登记、修改</li>
+  <li><strong>语音输入 🎤</strong>：开车、双手沾涂料时直接说话</li>
+  <li><strong>路线优化</strong>：多个工地走访时按最优顺序排期</li>
+  <li><strong>未接来电管理</strong>：客户来电自动登记为「新订单」</li>
+  <li><strong>备忘录</strong>：随手记下材料/约定/休假</li>
+</ul>
+
+<h2>3. 工程状态说明</h2>
+<table>
+  <tr><th>状态</th><th>含义</th><th>常见动作</th></tr>
+  <tr><td><span class="badge b-lead">询价</span></td><td>客户来电或来邮，还未报价</td><td>了解需求，约时间报价</td></tr>
+  <tr><td><span class="badge b-quoted">已报价</span></td><td>已发报价单给客户</td><td>等待客户确认</td></tr>
+  <tr><td><span class="badge b-scheduled">已排期</span></td><td>客户已接受，定下施工日期</td><td>准备材料、安排班组</td></tr>
+  <tr><td><span class="badge b-in_progress">施工中</span></td><td>正在工地施工</td><td>每天更新进度，与客户保持沟通</td></tr>
+  <tr><td><span class="badge b-completed">已完成</span></td><td>验收完成，账款已收（或开票中）</td><td>开发票，归档照片</td></tr>
+</table>
+
+<h2>4. AI 助理 — 中文对话示例</h2>
+
+<h3>📊 查询类</h3>
+<ul>
+  <li>"今天施工中的工程有哪些"</li>
+  <li>"Smith 家的排期是什么时候"</li>
+  <li>"本月预计收入多少"</li>
+  <li>"只看电工的工程"</li>
+  <li>"班组名单"</li>
+</ul>
+
+<h3>✏️ 登记/修改类（助理会先确认再执行）</h3>
+<ul>
+  <li>"Smith 家的工程改成已完成"<br>→ 助理："已确认：Smith 욕실 → 已完成。确认提交吗？" → 您回 "是" → 实际修改</li>
+  <li>"明天上午 9 点登记 Johnson 客厅油漆，1 小时"<br>→ 助理转换为日历时间格式 → 确认后创建</li>
+  <li>"把 Mike 和 Joon 分配给 Lee 那个工程"</li>
+</ul>
+
+<h3>🗺️ 路线类</h3>
+<ul>
+  <li>"从 Richmond Hill 到 Markham ABC 要多久"</li>
+  <li>"今天要走的 3 个地方，安排最佳顺序"</li>
+</ul>
+<div class="tip">⚠️ 使用 OpenRouteService 免费版，<strong>不反映实时交通</strong>。高峰时段（早 7-9 点、晚 4-7 点）请加 20% 缓冲时间。</div>
+
+<h2>5. 仪表盘界面</h2>
+
+<h3>左侧</h3>
+<ul>
+  <li><strong>本月收入</strong>：在途总额（含询价/已报价）、已确认（施工+完工）、预计成本、本月工程数</li>
+  <li><strong>今日排期</strong>：连接 Google 日历后显示</li>
+  <li><strong>未接来电</strong>：电话 AI 接听后的来电记录</li>
+</ul>
+
+<h3>右侧</h3>
+<ul>
+  <li>🟡 <strong>新订单</strong>：刚来电/来邮的工程（状态=询价）</li>
+  <li>🔨 <strong>施工中</strong>：进行中的工程</li>
+  <li>📌 <strong>已排期 / 已报价</strong>：等待开工的工程</li>
+  <li>📝 <strong>备忘录</strong>：手动笔记</li>
+  <li>💬 <strong>给开发者留言</strong>：希望增加什么功能（中文留言自动翻译给开发者）</li>
+</ul>
+
+<h3>右下角</h3>
+<ul>
+  <li>💬 <strong>AI 助理</strong>：点击展开聊天面板</li>
+  <li>📌 <strong>固定按钮</strong>：点击后聊天窗口常驻显示（刷新页面也保留）</li>
+  <li>🎤 <strong>语音输入</strong>：点击录音 → 再点击停止 → 自动转换为文字</li>
+</ul>
+
+<h2>6. 工程登记/修改</h2>
+<p>点击任意工程卡片打开详情弹窗。可编辑：</p>
+<ul>
+  <li>工程名 / 客户 / 电话 / 地址</li>
+  <li>类型（装修工/装修/电工/水暖/HVAC/清洁/园艺/其他）</li>
+  <li>状态（询价/已报价/已排期/施工中/已完成/已取消）</li>
+  <li><strong>预计收入 / 预计成本（CAD）</strong></li>
+  <li><strong>人手 / 班组成员</strong>（如 "Mike, Joon"）</li>
+  <li><strong>开工日期 / 预计完工</strong></li>
+  <li>详细描述</li>
+</ul>
+<p>新增工程：右上角 <code>+ 添加</code> 按钮。</p>
+
+<h2>7. 多语言切换</h2>
+<p>右上角下拉选择：<strong>한국어 / English / 中文</strong>。即时切换，记住下次访问的语言。</p>
+<p>菜单不是单词翻译，而是<strong>各语言地区装修业主常用的表达</strong>。</p>
+
+<h2>8. 给开发者留言 💬</h2>
+<p>仪表盘右下方的 <strong>给开发者留言</strong> 卡片。希望增加的功能、用着不顺手的地方，请随意留言。</p>
+<div class="tip">
+✅ <strong>中文留言完全可以</strong> —— 系统会自动翻译成韩文给开发者，开发者看完会反馈/改进。<br>
+英文、한국어 也都可以，会自动检测语言。
+</div>
+
+<h2>9. 语音机器人电话 (即将开通)</h2>
+<p>客户拨打公司电话 → AI 用中文/英文/韩文自动接听 → 记录工程信息 → 自动登记为「新订单」 → 您的手机收到摘要短信。</p>
+<p>第一次试用版可能还未开通电话号码，请联系开发者确认状态。</p>
+
+<h2>10. 数据安全</h2>
+<ul>
+  <li>数据存储于加拿大境内服务器（Supabase ca-central-1）</li>
+  <li>仅店主本人可访问，不对外公开</li>
+  <li>不用于训练 AI 模型</li>
+  <li>符合 PIPEDA（加拿大隐私法）</li>
+</ul>
+
+<h2>11. 常见问题</h2>
+
+<h3>页面打开是空白</h3>
+<p>请等待 5 秒后刷新。如果还是空白，请检查网络连接，或联系开发者。</p>
+
+<h3>金额单位是什么</h3>
+<p>所有金额均为 <strong>加拿大元 (CAD, $)</strong>。AI 助理回答中也使用 $。</p>
+
+<h3>样本数据是韩文，是 bug 吗</h3>
+<p>不是。当前样本数据是开发者的演示数据（韩国客户名）。实际使用时您输入的中文数据会正常保存和显示。</p>
+
+<h3>AI 助理回答时混用韩文</h3>
+<p>如发现，请截图后通过「给开发者留言」反馈。最新版本已修正此问题。</p>
+
+<h3>能在手机上用吗</h3>
+<p>可以。响应式设计，手机浏览器直接打开链接即可。</p>
+
+<h2>12. 反馈渠道</h2>
+<ul>
+  <li>仪表盘 → 「给开发者留言」（首选，可中文）</li>
+  <li>电邮：<a href="mailto:furscar@gmail.com">furscar@gmail.com</a></li>
+</ul>
+
+<div class="footer">
+  Trades-OS v0.1 (Beta) · 開發者：코대리 (한지원) · 2026年5月<br>
+  GitHub: <a href="https://github.com/furscar-star/trades-os">github.com/furscar-star/trades-os</a>
+</div>
+
 </body>
 </html>`;
 }

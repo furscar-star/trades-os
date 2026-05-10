@@ -137,6 +137,19 @@ ALTER TABLE job_documents ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "demo_all_access" ON job_documents;
 CREATE POLICY "demo_all_access" ON job_documents FOR ALL USING (true) WITH CHECK (true);
 
+-- ── feedback (개발자 코멘트, 다국어 + 자동 한국어 번역) ─────
+CREATE TABLE IF NOT EXISTS feedback (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  content       TEXT NOT NULL,
+  language      TEXT,
+  translated_ko TEXT,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback(created_at DESC);
+ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "demo_all_access" ON feedback;
+CREATE POLICY "demo_all_access" ON feedback FOR ALL USING (true) WITH CHECK (true);
+
 -- ── 샘플 데이터 ───────────────────────────────────────
 INSERT INTO jobs (title, client_name, client_phone, client_email, address, trade_type, status,
                   expected_revenue, expected_cost, crew_size, assigned_crew,
