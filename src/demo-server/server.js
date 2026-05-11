@@ -965,6 +965,10 @@ const I18N = {
     newjobs: '🟡 신규 의뢰', active: '🔨 진행 중', scheduled: '📌 예약 / 견적',
     notes: '📝 메모', add: '+ 추가', addNote: '+ 추가',
     notePlaceholder: '메모 추가...',
+    scheduleConnect: 'Gmail 연결 후 표시',
+    scheduleEmpty: '오늘 일정 없음',
+    callsEmpty: '—',
+    minSuffix: '분',
     feedback: '💬 개발자에게 코멘트', feedbackPlaceholder: '어떤 기능이 있으면 더 좋을지 자유롭게 (한국어/中文/English)',
     feedbackSend: '보내기', feedbackEmpty: '아직 코멘트 없음.',
     chatTitle: '🤖 AI 비서', chatSub: '잡·일정·매출 질의',
@@ -984,6 +988,10 @@ const I18N = {
     newjobs: '🟡 New Requests', active: '🔨 In Progress', scheduled: '📌 Scheduled / Quoted',
     notes: '📝 Notes', add: '+ Add', addNote: '+ Add',
     notePlaceholder: 'Add note...',
+    scheduleConnect: 'Connect Gmail to see events',
+    scheduleEmpty: 'No events today',
+    callsEmpty: '—',
+    minSuffix: 'min',
     feedback: '💬 Send Feedback to Dev', feedbackPlaceholder: 'What features would you like? (한국어/中文/English all OK)',
     feedbackSend: 'Send', feedbackEmpty: 'No feedback yet.',
     chatTitle: '🤖 AI Assistant', chatSub: 'Jobs · Schedule · Revenue',
@@ -1003,6 +1011,10 @@ const I18N = {
     newjobs: '🟡 新订单', active: '🔨 施工中', scheduled: '📌 已排期 / 已报价',
     notes: '📝 备忘录', add: '+ 添加', addNote: '+ 添加',
     notePlaceholder: '添加备忘录...',
+    scheduleConnect: '连接 Gmail 后显示',
+    scheduleEmpty: '今日无排期',
+    callsEmpty: '—',
+    minSuffix: '分',
     feedback: '💬 给开发者留言', feedbackPlaceholder: '希望增加哪些功能？请随意留言 (中文/한국어/English 都可以，会自动翻译)',
     feedbackSend: '发送', feedbackEmpty: '暂无留言。',
     chatTitle: '🤖 AI 助理', chatSub: '工程·排期·收入',
@@ -1280,12 +1292,13 @@ async function loadCalls() {
     const r = await api('/api/calls');
     document.getElementById('calls-count').textContent = (r.calls || []).length + '';
     const ul = document.getElementById('calls-list');
-    if (!r.calls.length) { ul.innerHTML = '<p class="text-slate-400 text-xs">—</p>'; return; }
+    const T = t();
+    if (!r.calls.length) { ul.innerHTML = \`<p class="text-slate-400 text-xs">\${T.callsEmpty}</p>\`; return; }
     ul.innerHTML = r.calls.slice(0, 6).map(c => \`
       <li>
         <div class="font-medium text-xs">\${esc(c.caller || '-')} \${c.language ? \`<span class="text-[10px] text-slate-400">[\${c.language}]</span>\` : ''}</div>
         <div class="text-xs text-slate-600">\${esc(c.summary || '-')}</div>
-        <div class="text-[11px] text-slate-400">\${fmtDate(c.created_at)} · \${Math.round((c.duration_sec || 0) / 60)}분</div>
+        <div class="text-[11px] text-slate-400">\${fmtDate(c.created_at)} · \${Math.round((c.duration_sec || 0) / 60)}\${T.minSuffix}</div>
       </li>\`).join('');
   } catch (e) {}
 }
@@ -1328,10 +1341,12 @@ async function loadSchedule() {
   try {
     const r = await api('/api/calendar/today');
     const ul = document.getElementById('schedule-list');
-    if (!r.connected) { ul.innerHTML = '<li class="text-slate-400 text-xs">Gmail 연결 후 표시</li>'; return; }
-    if (!r.events?.length) { ul.innerHTML = '<li class="text-slate-400 text-xs">오늘 일정 없음</li>'; return; }
+    const T = t();
+    if (!r.connected) { ul.innerHTML = \`<li class="text-slate-400 text-xs">\${T.scheduleConnect}</li>\`; return; }
+    if (!r.events?.length) { ul.innerHTML = \`<li class="text-slate-400 text-xs">\${T.scheduleEmpty}</li>\`; return; }
+    const locale = LANG === 'en' ? 'en-CA' : LANG === 'zh' ? 'zh-CN' : 'ko-KR';
     ul.innerHTML = r.events.map(e => {
-      const time = e.start ? new Date(e.start).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '';
+      const time = e.start ? new Date(e.start).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }) : '';
       return \`<li><span class="text-xs font-mono text-slate-500">\${time}</span> \${esc(e.title)}\${e.location ? \` <span class="text-xs text-slate-400">@ \${esc(e.location)}</span>\` : ''}</li>\`;
     }).join('');
   } catch (e) {}
